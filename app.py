@@ -179,7 +179,7 @@ with tab1:
         a, b = st.columns(2)
         a.metric('최대 두께비', f"{fe['t_max']:.3f}")
         b.metric('최대 캠버', f"{fe['camber_max']:.3f}")
-        a.metric('단면 이차모멘트 I', f"{fe['I']*1e5:.1f}×10⁻⁵")
+        a.metric('단면 이차모멘트 I (×10⁻⁵)', f"{fe['I']*1e5:.1f}")
         b.metric('I (PINN 최적점 대비)', f"{fe['I']/I_pinn*100:.0f}%")
         a.metric('최대 L/D (대리모델)', f'{ld[i_best]:.1f}')
         b.metric('최적 받음각', f'{ALPHA_CURVE[i_best]:.1f}°')
@@ -196,6 +196,8 @@ with tab1:
         f.update_layout(title=f'{yname} – 받음각 (Re {re_label})', xaxis_title='받음각 α (°)', yaxis_title=yname,
                         height=320, margin=dict(l=10, r=10, t=40, b=10))
         col.plotly_chart(f, width='stretch')
+
+    st.caption('곡선이 계단 모양인 것은 랜덤포레스트가 학습 데이터 구간별 평균값으로 예측하기 때문입니다.')
 
     # 신뢰도 안내 (탐구 결과에 근거)
     st.subheader('이 예측을 얼마나 믿을 수 있나')
@@ -223,7 +225,7 @@ with tab1:
 # ---------------- ② 강성–효율 지도 ----------------
 with tab2:
     st.markdown('NACA 4자리 형상 325개(캠버 위치 0.4)를 **XFOIL로 직접 계산**한 결과입니다 (Re 2×10⁵). '
-                '검은 선은 강성과 효율을 동시에 더 좋게 만들 수 없는 형상들(파레토 전선)입니다.')
+                '파란 선은 강성과 효율을 동시에 더 좋게 만들 수 없는 형상들(파레토 전선)입니다.')
     g = gv.copy()
     front = pareto(g, 'I', 'XFOIL_200k')
     fig = go.Figure()
@@ -232,15 +234,16 @@ with tab2:
                              text=[f't={a:.2f}, m={b:.3f}' for a, b in zip(g.t, g.m)],
                              hovertemplate='%{text}<br>I=%{x:.1f}e-5<br>L/D=%{y:.1f}<extra></extra>'))
     fig.add_trace(go.Scatter(x=front.I * 1e5, y=front.XFOIL_200k, mode='lines', name='파레토 전선 (XFOIL)',
-                             line=dict(color='black')))
+                             line=dict(color='#00b4d8', width=3)))
     pr = grid.iloc[-1]
     fig.add_trace(go.Scatter(x=[pr.I * 1e5], y=[pr.XFOIL_200k], mode='markers', name='이전 PINN 최적점 (XFOIL)',
                              marker=dict(symbol='star', size=18, color='red', line=dict(color='black', width=1))))
     if RE == 200_000:
         fig.add_trace(go.Scatter(x=[fe['I'] * 1e5], y=[ld[i_best]], mode='markers', name='현재 형상 (대리모델 예측)',
                                  marker=dict(symbol='diamond', size=14, color='orange', line=dict(color='black', width=1))))
-    fig.update_layout(xaxis_title='단면 이차모멘트 I (×10⁻⁵, 시위 = 1)', yaxis_title='최대 L/D', height=520,
-                      margin=dict(l=10, r=10, t=30, b=10))
+    fig.update_layout(xaxis_title='단면 이차모멘트 I (×10⁻⁵, 시위 = 1)', yaxis_title='최대 L/D', height=560,
+                      margin=dict(l=10, r=10, t=30, b=10),
+                      legend=dict(orientation='h', yanchor='top', y=-0.18, xanchor='left', x=0))
     st.plotly_chart(fig, width='stretch')
     if RE != 200_000:
         st.caption('현재 형상은 Re 2×10⁵를 선택했을 때만 지도에 표시됩니다 (지도는 Re 2×10⁵ 계산값).')
@@ -251,15 +254,21 @@ with tab3:
     I_min = st.slider('최소 단면 이차모멘트 I (×10⁻⁵)', 1.0, 110.0, 20.0, 1.0) * 1e-5
 
     st.subheader('A. XFOIL로 검증된 답')
-    gg = gv[gv.I >= I_min]
+    pool = [gv.assign(p=0.4, LD=gv.XFOIL_200k, 출처='격자 탐색 (p = 0.4)')[['t', 'm', 'p', 'I', 'LD', '출처']]]
+    if q4 is not None:
+        q = q4.dropna(subset=['LD_xfoil'])
+        pool.append(q.assign(LD=q.LD_xfoil, 출처='역설계 후보 (XFOIL 재계산)')[['t', 'm', 'p', 'I', 'LD', '출처']])
+    pool = pd.concat(pool, ignore_index=True)
+    gg = pool[pool.I >= I_min]
+    st.caption(f'XFOIL로 직접 계산한 형상 {len(pool)}개(격자 {len(gv)}개 + 역설계 후보) 중에서 고릅니다.')
     if len(gg):
-        b = gg.loc[gg.XFOIL_200k.idxmax()]
-        st.success(f'격자 형상 중 XFOIL 최대 L/D 1위: t/c {b.t:.2f}, 캠버 {b.m:.3f}, 캠버 위치 0.40 → '
-                   f'L/D **{b.XFOIL_200k:.1f}**, I {b.I*1e5:.1f}×10⁻⁵')
-        st.download_button('이 형상 좌표(.dat)', dat_text(b.t, b.m, 0.4, f'grid best I>={I_min*1e5:.0f}e-5'),
-                           file_name=f'grid_best_I{I_min*1e5:.0f}e-5.dat')
+        b = gg.loc[gg.LD.idxmax()]
+        st.success(f'XFOIL 최대 L/D 1위: t/c {b.t:.3f}, 캠버 {b.m:.4f}, 캠버 위치 {b.p:.2f} → '
+                   f'L/D **{b.LD:.1f}**, I {b.I*1e5:.1f}×10⁻⁵  ({b["출처"]})')
+        st.download_button('이 형상 좌표(.dat)', dat_text(b.t, b.m, b.p, f'XFOIL-verified best I>={I_min*1e5:.0f}e-5'),
+                           file_name=f'verified_best_I{I_min*1e5:.0f}e-5.dat')
     else:
-        st.warning('이 조건을 만족하는 격자 형상이 없습니다.')
+        st.warning('이 조건을 만족하는 검증된 형상이 없습니다.')
     if final is not None:
         st.markdown('탐구에서 역설계(유전 알고리즘) 상위 10개를 XFOIL로 다시 계산해 고른 최종 형상:')
         show = final.rename(columns={'I_x1e5': 'I(×10⁻⁵)', 'XFOIL_LD': 'XFOIL L/D', 'GA_LD': '역설계 최고', '격자_LD': '격자 최고'})
